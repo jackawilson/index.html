@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DiffEq Practice • Jack</title>
+  <!-- Tailwind via CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React 18 UMD + Babel for in-browser JSX -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- MathJax for TeX rendering -->
+  <script>
+    window.MathJax = {
+      tex: {inlineMath: [["$","$"],["\\(","\\)"]]},
+      svg: {fontCache: 'global'}
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+  <style>
+    html,body,#root{height:100%}
+    .dev-badge{letter-spacing:.03em}
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+
+    // ---------------------- Utilities ----------------------
+    const randInt = (a,b)=> Math.floor(Math.random()*(b-a+1))+a;
+    const choice = (arr)=> arr[Math.floor(Math.random()*arr.length)];
+    const roundTo = (x,n)=>{ const p=10**n; return Math.round((+x+Number.EPSILON)*p)/p; };
+    const approxEqual = (a,b,tol=1e-3)=> Math.abs(a-b) <= tol;
+
+    function useMathJaxTypeset(deps){
+      useEffect(()=>{ if(window.MathJax?.typesetPromise){ window.MathJax.typesetPromise(); } }, deps);
+    }
+
+    // Helper: safe question creation with bounded retries to avoid recursion / stack growth
+    function makeWithRetries(fn, {tries=25}={}){
+      for(let i=0;i<tries;i++){
+        const q = fn();
+        if(q && typeof q === 'object') return q;
+      }
+      // Last resort: simple known-good question
+      return genSep_ax_y();
+    }
+
+    // ---------------------- Question Generators ----------------------
+    // Each generator returns a question object:
+    // { id, topic, prompt, type: 'numeric'|'mcq'|'short', answer, meta, hint, solution, validate(userAnswer) }
+
+    // 1) Separation with IC: y' = a x y, y(0)=b. Ask y(1) (3 dp)
+    function genSep_ax_y(){
+      const a = choice([1,2,3,4]);
+      const b = choice([1,2,3,4,5]);
+      const trueVal = b * Math.exp(a/2); // y(x) = b * exp(a x^2 / 2)
+      const answer = roundTo(trueVal, 3);
+      const prompt = `Solve $\\dfrac{dy}{dx} = ${a}xy$ with $y(0)=${b}$. What is $y(1)$? (round to 3 d.p.)`;
+      const solution = `Separate: $\\dfrac{1}{y}dy = ${a}x\\,dx$. Integrate: $\\ln|y| = ${a}x^2/2 + C$ so $y = Ae^{${a}x^2/2}$. Use $y(0)=${b}$ to get $A=${b}$. Thus $y(1)=${b}e^{${a}/2} \\approx ${answer}.`;
+      return {
+        id: crypto.randomUUID(), topic: 'Separable', prompt, type: 'numeric', answer,
+        meta: {round:3}, hint: 'Use separation, then apply the initial condition at x=0.', solution,
+        validate: (ua)=> approxEqual(parseFloat(ua), trueVal, 5e-3)
+      };
+    }
+
+    // 2) Separable power: y' = k y^m (m>1), with IC y(0)=y0. Ask y(1).
+    // Original recursion caused stack overflows when base <= 0.
+    // Fix: choose (k,m,y0) from safe sets *and* bound attempts. No recursion.
+    function genSep_power(){
+      // Choose from safe parameter sets so that base = y0^{1-m} + (1-m)k*1 > 0
+      const kSet = [0.05, 0.1, 0.2, 0.3];
+      const mSet = [2,3,4];
+      const y0Set = [1,2,3];
+      let selected=null;
+      for(let i=0;i<40;i++){
+        const k = choice(kSet);
+        const m = choice(mSet);
+        const y0 = choice(y0Set);
+        const base = Math.pow(y0, 1-m) + (1-m)*k; // x=1
+        if(base > 0.05){ // keep margin from 0 to avoid numeric issues
+          selected = {k,m,y0,base};
+          break;
+        }
+      }
+      if(!selected){
+        // Known-good fallback
+        selected = {k:0.1, m:2, y0:3};
+        selected.base = Math.pow(selected.y0,1-selected.m) + (1-selected.m)*selected.k;
+      }
+      const {k,m,y0,base} = selected;
+      const trueVal = Math.pow(base, 1/(1-m));
+      const ans = roundTo(trueVal, 3);
+      const prompt = `Consider $\\dfrac{dy}{dx} = ${k}y^{${m}}$ with $y(0)=${y0}$. Find $y(1)$ (3 d.p.).`;
+      const solution = `Separate: $y^{-m}dy = ${k}\\,dx$. Integrate: $\\dfrac{y^{1-m}}{1-m} = ${k}x + C$. Using $y(0)=${y0}$ gives $C= \\dfrac{${y0}^{1-${m}}}{1-${m}}$. Hence $y^{1-m} = ${y0}^{1-${m}} + (1-${m})${k}x$, so $y(1) = [${y0}^{1-${m}} + (1-${m})${k}]^{1/(1-${m})} \\approx ${ans}.`;
+      return { id: crypto.randomUUID(), topic: 'Separable', prompt, type: 'numeric', answer: ans, meta:{round:3}, hint: 'Integrate $y^{-m}$ and solve for $y(x)$; plug in $x=1$.', solution, validate: (ua)=> approxEqual(parseFloat(ua), trueVal, 5e-3) };
+    }
+
+    // 3) Singular solution recognition for y' = b x (y-1)^3
+    function genSingular(){
+      const b = choice([1,2,3,4]);
+      const options = ["y=1","y=0","y=x","y=\\sqrt{x}"]; // MCQ
+      const correct = 0;
+      const prompt = `For $\\dfrac{dy}{dx} = ${b} x (y-1)^3$, which of the following is a singular solution?`;
+      const solution = `For any $x$, if $y=1$ then $(y-1)^3=0$ so $dy/dx=0$ and $y=1$ satisfies the ODE but is not part of the general family from separation; hence it is a singular solution.`;
+      return { id: crypto.randomUUID(), topic: 'Separable', prompt, type: 'mcq', options, answer: correct, hint: 'Set $(y-1)^3=0$ and check.', solution, validate: (ua)=> parseInt(ua,10)===correct };
+    }
+
+    // 4) Existence & Uniqueness at a point
+    function genEUT(){
+      const cases = [
+        {f:"xy", x0:0, y0:0, ok:true, why:"$f$ and $\\partial f/\\partial y = x$ are continuous near $(0,0)$."},
+        {f:"y^{1/3}", x0:0, y0:0, ok:false, why:"$\\partial f/\\partial y = \\tfrac{1}{3}y^{-2/3}$ is not continuous at $y=0$."},
+        {f:"x/y", x0:0, y0:0, ok:false, why:"$f$ is not defined along $y=0$."},
+        {f:"e^{x}\\sin y", x0:1, y0:2, ok:true, why:"$f$ and its $y$-derivative are continuous everywhere."}
+      ];
+      const c = choice(cases);
+      const prompt = `Does the existence & uniqueness theorem guarantee a unique local solution for $y' = f(x,y)$ with $f(x,y)=${c.f}$ at $(x_0,y_0)=(${c.x0},${c.y0})$?`;
+      const options = ["Yes","No"];
+      const answer = c.ok ? 0 : 1;
+      const solution = `${c.ok?"Yes":"No"}. ${c.why}`;
+      return { id: crypto.randomUUID(), topic: 'Existence & Uniqueness', prompt, type:'mcq', options, answer, hint:'Check continuity of $f$ and (locally) Lipschitz in $y$ near the point.', solution, validate:(ua)=> parseInt(ua,10)===answer };
+    }
+
+    // 5) Terminal velocity from dv/dt = g - k v
+    function genTerminalV(){
+      const g = choice([9.8, 32]);
+      const k = choice([0.5, 0.25, 0.2]);
+      const vt = g/k;
+      const prompt = `For $\\dfrac{dv}{dt} = ${g} - ${k}v$, what is the terminal velocity $v_t$?`;
+      const solution = `At terminal velocity, $dv/dt=0$, so $0 = g - kv_t$ giving $v_t = g/k = ${vt}.`;
+      return { id: crypto.randomUUID(), topic: 'Slope fields', prompt, type:'numeric', answer: roundTo(vt,2), meta:{round:2}, hint:'Set $dv/dt = 0$.', solution, validate:(ua)=> approxEqual(parseFloat(ua), vt, 1e-2) };
+    }
+
+    // 6) Push a car: v(t) with constant force
+    function genCarPush(){
+      const m = choice([800,1000,1200]);
+      const F = choice([200,300,400]);
+      const v0 = choice([0,2,5]);
+      const t = choice([3,5,10]);
+      const v = v0 + (F/m)*t;
+      const prompt = `A car of mass ${m}\\,kg starts at speed ${v0}\\,m/s. A constant force ${F}\\,N is applied. Using $ma=F$, find $v(${t})$ (m/s).`;
+      const solution = `Acceleration $a=F/m = ${(F/m).toFixed(3)}$. With constant $a$, $v(t)=v_0+at = ${v0} + ${(F/m).toFixed(3)}\\cdot ${t} = ${v.toFixed(3)}$ m/s.`;
+      return { id: crypto.randomUUID(), topic: 'Applications', prompt, type:'numeric', answer: roundTo(v,3), meta:{round:3}, hint:'Use $v(t)=v_0+(F/m)t$.', solution, validate:(ua)=> approxEqual(parseFloat(ua), v, 5e-3) };
+    }
+
+    // 7) Implicit vs explicit branches
+    function genImplicitBranch(){
+      const C = choice([4,9,16]);
+      const prompt = `From separation one obtains the implicit curve $y^2 + x = ${C}$. Which explicit branch gives $y(0)<0$?`;
+      const options = [
+        `y(x)=+\\sqrt{${C}-x}`,
+        `y(x)=-\\sqrt{${C}-x}`,
+        `y(x)=\\sqrt{x-${C}}`,
+        `y(x)=-\\sqrt{x-${C}}`
+      ];
+      const solution = `At $x=0$, $y(0)^2=${C}$ so $y(0)=\\pm \\sqrt{${C}}$. The negative branch is $y=-\\sqrt{${C}-x}$.`;
+      return { id: crypto.randomUUID(), topic:'Separable', prompt, type:'mcq', options, answer:1, hint:'Evaluate at $x=0$ and choose sign.', solution, validate:(ua)=> parseInt(ua,10)===1 };
+    }
+
+    const GENERATORS = {
+      'Separable': [genSep_ax_y, genSep_power, genSingular, genImplicitBranch],
+      'Existence & Uniqueness': [genEUT],
+      'Slope fields': [genTerminalV],
+      'Applications': [genCarPush]
+    };
+
+    // ---------------------- Components ----------------------
+    const Badge = ({children})=> <span className="inline-block rounded-full bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5">{children}</span>;
+
+    function Header({streak, correct, total}){
+      const pct = total>0 ? Math.round(100*correct/total) : 0;
+      return (
+        <div className="flex items-center justify-between p-4 border-b bg-white">
+          <div className="flex items-center gap-3">
+            <span className="text-xl font-semibold">DiffEq Practice</span>
+            <Badge>IXL-style drills</Badge>
+          </div>
+          <div className="flex items-center gap-4 text-sm">
+            <div>Streak: <span className="font-semibold">{streak}</span></div>
+            <div>Score: <span className="font-semibold">{correct}/{total}</span> ({pct}%)</div>
+            <a href="#resources" className="underline decoration-dotted">Resources</a>
+          </div>
+        </div>
+      );
+    }
+
+    function Sidebar({topics, current, setTopic, reset}){
+      return (
+        <aside className="w-64 border-r bg-white p-3 space-y-2">
+          <div className="text-sm font-semibold mb-2">Topics</div>
+          {topics.map(t => (
+            <button key={t} onClick={()=>{ setTopic(t); reset(); }} className={`w-full text-left px-3 py-2 rounded-lg border ${current===t? 'bg-indigo-50 border-indigo-300':'hover:bg-slate-50'}`}>{t}</button>
+          ))}
+          <div className="pt-4 text-xs text-slate-500">Progress is saved to your browser.</div>
+        </aside>
+      );
+    }
+
+    function MCQ({options, value, setValue}){
+      return (
+        <div className="space-y-2">
+          {options.map((opt, i)=> (
+            <label key={i} className="flex items-center gap-2 cursor-pointer">
+              <input type="radio" name="mcq" checked={value===String(i)} onChange={()=> setValue(String(i))} />
+              <span dangerouslySetInnerHTML={{__html: opt.replaceAll('\\','\\\\')}}></span>
+            </label>
+          ))}
+        </div>
+      );
+    }
+
+    const Numeric = ({value, setValue, round})=> (
+      <input value={value} onChange={e=> setValue(e.target.value)} placeholder={`e.g. 1.234 (${round} d.p.)`} className="w-40 px-3 py-2 border rounded-lg" />
+    );
+
+    const Short = ({value, setValue})=> (
+      <input value={value} onChange={e=> setValue(e.target.value)} placeholder="type an answer" className="w-full max-w-lg px-3 py-2 border rounded-lg" />
+    );
+
+    function QuestionCard({q, onResult}){
+      const [user, setUser] = useState("");
+      const [checked, setChecked] = useState(false);
+      const [correct, setCorrect] = useState(null);
+      useMathJaxTypeset([q, checked]);
+
+      function check(){
+        let ok=false;
+        try{ ok = q.validate(user); }catch(e){ ok=false; }
+        setCorrect(ok);
+        setChecked(true);
+        onResult(ok);
+      }
+
+      function next(){ setChecked(false); setCorrect(null); setUser(""); onResult('next'); }
+
+      return (
+        <div className="bg-white shadow-sm rounded-2xl p-5 border">
+          <div className="text-sm mb-2"><Badge>{q.topic}</Badge></div>
+          <div className="prose max-w-none mb-4"><div dangerouslySetInnerHTML={{__html: q.prompt}}></div></div>
+
+          {q.type==='mcq' && <MCQ options={q.options} value={user} setValue={setUser} />}
+          {q.type==='numeric' && <Numeric value={user} setValue={setUser} round={(q.meta?.round)||3} />}
+          {q.type==='short' && <Short value={user} setValue={setUser} />}
+
+          <div className="mt-4 flex items-center gap-2">
+            {!checked ? (
+              <>
+                <button onClick={check} className="px-4 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700">Check</button>
+                <button onClick={()=> alert(q.hint)} className="px-3 py-2 rounded-xl border">Hint</button>
+              </>
+            ) : (
+              <>
+                <span className={`px-2 py-1 rounded-full text-sm ${correct? 'bg-green-100 text-green-800':'bg-rose-100 text-rose-800'}`}>{correct? 'Correct!':'Try again'}</span>
+                {!correct && <button onClick={()=> alert(q.hint)} className="px-3 py-2 rounded-xl border">Hint</button>}
+                <button onClick={()=> alert(q.solution)} className="px-3 py-2 rounded-xl border">Explanation</button>
+                <button onClick={next} className="ml-auto px-4 py-2 rounded-xl bg-slate-900 text-white hover:bg-slate-800">Next problem</button>
+              </>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ---------------------- Dev / Tests ----------------------
+    function runTests(){
+      const results = [];
+
+      // Test 1: genSep_power should never recurse / overflow and should produce valid base
+      try{
+        for(let i=0;i<200;i++){
+          const q = genSep_power();
+          if(!q || q.type!=='numeric') throw new Error('genSep_power did not return a numeric question');
+          if(!isFinite(q.answer)) throw new Error('genSep_power answer not finite');
+          // Should accept the displayed answer (rounded) within tolerance
+          if(!q.validate(String(q.answer))) throw new Error('genSep_power validate failed on own answer');
+        }
+        results.push({name:'genSep_power stability (200 runs)', ok:true});
+      }catch(e){ results.push({name:'genSep_power stability (200 runs)', ok:false, err:String(e)}); }
+
+      // Test 2: All generators return an object with required fields
+      const required = ['id','topic','prompt','type','hint','solution','validate'];
+      try{
+        Object.entries(GENERATORS).forEach(([topic, gens])=>{
+          for(const fn of gens){
+            const q = makeWithRetries(fn);
+            required.forEach(k=>{ if(!(k in q)) throw new Error(`${fn.name} missing ${k}`); });
+            if(typeof q.validate !== 'function') throw new Error(`${fn.name} validate not function`);
+          }
+        });
+        results.push({name:'Generator interface checks', ok:true});
+      }catch(e){ results.push({name:'Generator interface checks', ok:false, err:String(e)}); }
+
+      // Test 3: Validate should reject obviously wrong answer
+      try{
+        const q = genSep_ax_y();
+        const wrong = (Number(q.answer) + 1).toString();
+        if(q.validate(wrong)) throw new Error('Validation accepted wrong answer');
+        results.push({name:'Validation rejects wrong answers', ok:true});
+      }catch(e){ results.push({name:'Validation rejects wrong answers', ok:false, err:String(e)}); }
+
+      return results;
+    }
+
+    function DevPanel(){
+      const [open, setOpen] = useState(false);
+      const [results, setResults] = useState([]);
+      return (
+        <div className="bg-white border rounded-2xl p-4">
+          <button className="text-sm px-3 py-1 rounded-lg border dev-badge" onClick={()=> setOpen(v=>!v)}>
+            {open? '▲ Hide dev tests' : '▼ Show dev tests'}
+          </button>
+          {open && (
+            <div className="mt-3">
+              <button className="px-3 py-2 rounded-lg bg-slate-900 text-white" onClick={()=> setResults(runTests())}>Run tests</button>
+              <ul className="mt-3 space-y-2 text-sm">
+                {results.map((r,i)=>(
+                  <li key={i} className={`px-3 py-2 rounded-lg border ${r.ok? 'bg-green-50 border-green-200':'bg-rose-50 border-rose-200'}`}>
+                    <div className="font-medium">{r.name}</div>
+                    <div className="text-xs text-slate-600">{r.ok? 'OK' : r.err}</div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ---------------------- App ----------------------
+    function App(){
+      const topics = Object.keys(GENERATORS);
+      const [topic, setTopic] = useState(localStorage.getItem('topic') || topics[0]);
+      const [q, setQ] = useState(null);
+      const [streak, setStreak] = useState(parseInt(localStorage.getItem('streak')||'0',10));
+      const [correct, setCorrect] = useState(parseInt(localStorage.getItem('correct')||'0',10));
+      const [total, setTotal] = useState(parseInt(localStorage.getItem('total')||'0',10));
+
+      useEffect(()=>{ localStorage.setItem('topic', topic); }, [topic]);
+      useEffect(()=>{ localStorage.setItem('streak', String(streak)); }, [streak]);
+      useEffect(()=>{ localStorage.setItem('correct', String(correct)); }, [correct]);
+      useEffect(()=>{ localStorage.setItem('total', String(total)); }, [total]);
+
+      function reset(){ setQ(null); }
+      function newQuestion(){
+        const gens = GENERATORS[topic];
+        // Bounded attempts to avoid pathological generator behavior
+        let nextQ=null;
+        for(let i=0;i<25;i++){
+          const candidate = choice(gens)();
+          if(candidate && typeof candidate==='object') { nextQ = candidate; break; }
+        }
+        setQ(nextQ || genSep_ax_y());
+      }
+      useEffect(()=>{ newQuestion(); }, [topic]);
+
+      function handleResult(r){
+        if(r==='next'){ newQuestion(); return; }
+        setTotal(x=>x+1);
+        if(r){ setCorrect(x=>x+1); setStreak(x=>x+1); }
+        else { setStreak(0); }
+      }
+
+      return (
+        <div className="h-full flex">
+          <Sidebar topics={topics} current={topic} setTopic={setTopic} reset={reset} />
+          <main className="flex-1 flex flex-col">
+            <Header streak={streak} correct={correct} total={total} />
+            <div className="max-w-4xl w-full mx-auto p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h1 className="text-2xl font-semibold">{topic}</h1>
+                <div className="flex items-center gap-2">
+                  <button onClick={()=>{ setStreak(0); setCorrect(0); setTotal(0); }} className="px-3 py-2 rounded-xl border">Reset score</button>
+                  <button onClick={()=> newQuestion()} className="px-3 py-2 rounded-xl bg-indigo-600 text-white">New problem</button>
+                </div>
+              </div>
+              {q && <QuestionCard q={q} onResult={handleResult} />}
+
+              <section id="resources" className="bg-white border rounded-2xl p-5">
+                <h2 className="text-lg font-semibold mb-2">Learn & Review</h2>
+                <p className="text-sm mb-3">Hand-picked refreshers (Beard Meets Calculus) and quick notes.</p>
+                <ul className="list-disc pl-6 space-y-1 text-sm">
+                  <li><a className="underline" href="https://www.beardmeetscalculus.org/" target="_blank" rel="noreferrer">Beard Meets Calculus — site hub</a></li>
+                  <li><a className="underline" href="https://www.youtube.com/@BeardMeetsCalculus" target="_blank" rel="noreferrer">Beard Meets Calculus — YouTube channel</a></li>
+                  <li><a className="underline" href="https://www.youtube.com/watch?v=VIdm9Mlcssc" target="_blank" rel="noreferrer">Practice: separable differential equations</a></li>
+                  <li><a className="underline" href="https://www.youtube.com/watch?v=uMy0oVmk9ws" target="_blank" rel="noreferrer">Linear first-order ODEs (integrating factor)</a></li>
+                  <li><a className="underline" href="https://www.youtube.com/watch?v=hfi4V03W7A0" target="_blank" rel="noreferrer">Differential equations — final walkthrough</a></li>
+                </ul>
+                <p className="text-xs text-slate-500 mt-3">This site is for practice; links above open external resources in new tabs.</p>
+              </section>
+
+              <DevPanel />
+
+              <footer className="text-xs text-slate-500 py-6">Made with ❤️ for learning. Your progress is stored locally (no accounts).</footer>
+            </div>
+          </main>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+</body>
+</html>
